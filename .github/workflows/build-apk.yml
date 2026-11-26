@@ -91,6 +91,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          
+      - name: Apply responsive / fastboot patch
+        run: git apply --verbose obs-android-responsive-fastboot.patch
+
 
       # ---- 先恢复预编依赖缓存，据此决定需要安装哪些宿主包 ----
       - name: Compute dependency cache key
