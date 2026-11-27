@@ -270,7 +270,7 @@
 + *   - 每次启动只重新算源文件摘要（qrc 在内存/APK 里，读比写便宜得多）；
 + *   - 摘要命中且目标文件仍在、大小一致 → 一次写都不做；
 + *   - 摘要变化或目标缺失 → 只覆盖那一个文件，并清掉已下线的旧文件；
-+ *   - 缓存用 QTemporaryFile + rename 原子替换，写一半被杀不会污染。
++ *   - 缓存用 QTemporaryFile::open() + rename 原子替换（带 OpenMode 的重载是 protected），写一半被杀不会污染。
 + * 摘要是内容级而非版本戳级：APK 升级后任何资源改动都会被发现，不存在
 + * 「只改前端资源、大小恰好没变」的漏判。强制全量重解包时删掉
 + * <dstRoot>/.obs-res-cache 即可。 */
@@ -312,7 +312,7 @@
 +static void writeResCache(const QString &path, const QHash<QString, ResEntry> &current)
 +{
 +	QTemporaryFile tmp(path + ".XXXXXX");
-+	if (!tmp.open(QIODevice::WriteOnly))
++	if (!tmp.open())
 +		return;
 +	QStringList keys = current.keys();
 +	keys.sort();
