@@ -1,0 +1,587 @@
+--- a/obs-studio/frontend/utility/android-layout-policy.hpp
++++ b/obs-studio/frontend/utility/android-layout-policy.hpp
+@@ -2,14 +2,60 @@
+ #pragma once
+ 
+ namespace OBSAndroidLayout {
+-// Qt widget sizes are logical pixels. Use the available window, not the device
+-// model or physical screen resolution; a tablet in a small window is compact.
++
++/* 布局分档。断点按 Android dp（160dpi 基准）算，不再用一条写死的
++ * 952x552 逻辑像素线：同一套 UI 在高密度手机、平板、分屏、自由窗口、
++ * DeX/外接显示器上都按"当前可用空间"连续变化，而不是二值跳变。
++ *
++ * Qt 在 Android 上报的 QWidget 尺寸是 logical px，由调用方传入
++ * QScreen::logicalDotsPerInch() 归一化到 dp。没有 DPI 上下文的旧调用点
++ * 走 classifyDefault()，按 160dpi 基准取同一套分档。 */
++enum class SizeClass { Compact = 0, Medium = 1, Expanded = 2 };
++
++constexpr double referenceDpi = 160.0;
++
++constexpr int toDp(int logicalPx, double logicalDpi)
++{
++	return logicalDpi > 0.0
++		       ? static_cast<int>(logicalPx * referenceDpi / logicalDpi + 0.5)
++		       : logicalPx;
++}
++
++/* 沿用原 compact() 的 OR 语义：「窄 或 矮」都算紧凑——横屏手机 873x393
++ * 宽度不小但高度很矮，旧版正是靠 height<552 判紧凑的，不能改成只看宽度。
++ * 阈值从写死的 952x552 逻辑像素换成按 DPI 归一化的 dp，并补出中间 /
++ * 展开两档；断点附近用 32dp 迟滞，防止窗口拖拽、转屏时来回跳。 */
++constexpr SizeClass classify(int widthPx, int heightPx, double logicalDpi,
++			     SizeClass previous = SizeClass::Medium)
++{
++	if (widthPx <= 0 || heightPx <= 0)
++		return previous;
++
++	const int w = toDp(widthPx, logicalDpi);
++	const int h = toDp(heightPx, logicalDpi);
++	constexpr int slack = 32;
++	const int compactW = 600 + (previous == SizeClass::Compact ? slack : 0);
++	const int compactH = 600 + (previous == SizeClass::Compact ? slack : 0);
++	const int expandedW = 840 - (previous == SizeClass::Expanded ? slack : 0);
++	const int expandedH = 720 - (previous == SizeClass::Expanded ? slack : 0);
++
++	if (w < compactW || h < compactH)
++		return SizeClass::Compact;
++	if (w >= expandedW && h >= expandedH)
++		return SizeClass::Expanded;
++	return SizeClass::Medium;
++}
++
++/* 兼容没有 DPI 上下文的旧调用点（对话框等）。 */
++constexpr SizeClass classifyDefault(int widthPx, int heightPx, bool wasCompact = false)
++{
++	return classify(widthPx, heightPx, referenceDpi,
++			wasCompact ? SizeClass::Compact : SizeClass::Medium);
++}
++
+ constexpr bool compact(int width, int height, bool wasCompact = false)
+ {
+-	if (width <= 0 || height <= 0)
+-		return wasCompact;
+-	// Hysteresis prevents alternating layouts near a breakpoint.
+-	return width < (wasCompact ? 1000 : 952) || height < (wasCompact ? 600 : 552);
++	return classifyDefault(width, height, wasCompact) == SizeClass::Compact;
+ }
+ 
+ constexpr bool phoneLandscape(int width, int height, bool wasPhone = false)
+@@ -21,13 +67,65 @@
+ 	       width * 10 >= height * (wasPhone ? 16 : 17);
+ }
+ 
++constexpr int touchRowHeight(SizeClass cls)
++{
++	return cls == SizeClass::Compact ? 32 : (cls == SizeClass::Medium ? 40 : 48);
++}
++
++/* 旧签名保留，逐字委托到分档版本，行为不变。 */
+ constexpr int touchRowHeight(bool isCompact)
+ {
+-	return isCompact ? 32 : 48;
++	return touchRowHeight(isCompact ? SizeClass::Compact : SizeClass::Expanded);
++}
++
++/* 窗口留白：小屏贴边、大屏留呼吸空间，不再一律 8px。 */
++constexpr int fitMargin(SizeClass cls)
++{
++	return cls == SizeClass::Compact ? 8 : (cls == SizeClass::Medium ? 16 : 24);
+ }
+ 
+ constexpr int fitLimit(int available, int margin = 8)
+ {
+ 	return available > margin * 2 ? available - margin * 2 : 1;
+ }
++
++constexpr int fitLimit(int available, SizeClass cls)
++{
++	return fitLimit(available, fitMargin(cls));
++}
++
++/* 顶层窗口目标尺寸占可用区的百分比。桌面版对话框是按大屏设计的，
++ * 大屏上也不该被拉满整块屏；按档位给上限，控件不会被拉散。 */
++constexpr int fitWidthPercent(SizeClass cls)
++{
++	return cls == SizeClass::Compact ? 94 : (cls == SizeClass::Medium ? 90 : 86);
++}
++
++constexpr int fitHeightPercent(SizeClass cls)
++{
++	return cls == SizeClass::Compact ? 94 : (cls == SizeClass::Medium ? 88 : 82);
++}
++
++/* dock 左右列宽 / 控制区高度百分比，替代写死的 25 / 30 / 43。 */
++constexpr int leftDockPercent(SizeClass cls)
++{
++	return cls == SizeClass::Compact ? 25 : (cls == SizeClass::Medium ? 22 : 20);
++}
++
++constexpr int rightDockPercent(SizeClass cls)
++{
++	return cls == SizeClass::Compact ? 30 : (cls == SizeClass::Medium ? 27 : 24);
++}
++
++constexpr int controlsHeightPercent(SizeClass cls)
++{
++	return cls == SizeClass::Compact ? 43 : (cls == SizeClass::Medium ? 38 : 34);
++}
++
++/* 内嵌预览占可用高的百分比，按档位连续；上下限仍由调用方夹。 */
++constexpr int previewHeightPercent(SizeClass cls)
++{
++	return cls == SizeClass::Compact ? 20 : (cls == SizeClass::Medium ? 25 : 30);
++}
++
+ } // namespace OBSAndroidLayout
+--- a/obs-studio/frontend/utility/android-window-fit.hpp
++++ b/obs-studio/frontend/utility/android-window-fit.hpp
+@@ -86,6 +86,27 @@
+ 	return available;
+ }
+ 
++/* 统一的尺寸档位入口：所有自适应判断都量"当前可用区 + 当前 DPI"，
++ * 避免各处各写一套阈值。屏幕变化、外接显示器、分屏缩放都靠它联动。 */
++inline OBSAndroidLayout::SizeClass
++androidSizeClass(const QScreen *scr, QSize available,
++		 OBSAndroidLayout::SizeClass previous = OBSAndroidLayout::SizeClass::Medium)
++{
++	if (!scr || available.isEmpty())
++		return previous;
++	return OBSAndroidLayout::classify(available.width(), available.height(),
++					 scr->logicalDotsPerInch(), previous);
++}
++
++inline OBSAndroidLayout::SizeClass
++androidSizeClass(const QWidget *w,
++		 OBSAndroidLayout::SizeClass previous = OBSAndroidLayout::SizeClass::Medium)
++{
++	if (!w)
++		return previous;
++	return androidSizeClass(w->screen(), androidAvailableWindowRect(w).size(), previous);
++}
++
+ /* 把一个顶层窗口缩进屏幕可用区并居中。
+  *
+  * 两个调用时机，逻辑同一份：
+@@ -129,9 +150,11 @@
+ 	const QRect avail = androidAvailableWindowRect(w);
+ 	if (avail.isEmpty())
+ 		return r;
+-	const int margin = 8;
+-	const QSize maxSize(OBSAndroidLayout::fitLimit(avail.width(), margin),
+-			    OBSAndroidLayout::fitLimit(avail.height(), margin));
++	/* 档位取自当前可用区而非设备型号：平板缩成分屏窗口自动切 Compact，
++	 * 外接大屏走 Expanded 并留更多留白。 */
++	const auto cls = androidSizeClass(scr, avail.size());
++	const QSize maxSize(OBSAndroidLayout::fitLimit(avail.width(), cls),
++			    OBSAndroidLayout::fitLimit(avail.height(), cls));
+ 
+ 	const QSize before = w->size();
+ 	r.avail = avail;
+@@ -144,10 +167,16 @@
+ 		return r;
+ 
+ 	QSize target = before;
+-	if (target.width() > maxSize.width())
+-		target.setWidth(maxSize.width());
+-	if (target.height() > maxSize.height())
+-		target.setHeight(maxSize.height());
++	/* 桌面版对话框按大屏设计，大屏上也不该被拉满整块屏；再叠一层
++	 * 档位比例上限，控件不会被拉散。 */
++	const QSize ratioCap(avail.width() * OBSAndroidLayout::fitWidthPercent(cls) / 100,
++			     avail.height() * OBSAndroidLayout::fitHeightPercent(cls) / 100);
++	const QSize cap(qMin(maxSize.width(), ratioCap.width()),
++			qMin(maxSize.height(), ratioCap.height()));
++	if (target.width() > cap.width())
++		target.setWidth(cap.width());
++	if (target.height() > cap.height())
++		target.setHeight(cap.height());
+ 
+ 	if (target == before)
+ 		return r; /* 本来就装得下，不动 */
+@@ -168,10 +197,11 @@
+ 	return r;
+ }
+ 
+-/* 紧凑窗口的内嵌预览按可用高取 1/5，夹在 [60, 120]；宽大窗口保留 150。
++/* 内嵌预览按「可用高 × 尺寸档位比例」连续取值，夹在 [60, 180]。
+  *
+  * 不能写死 80 —— 那是按 393 高的手机挑的：在 800 高的平板上只占 10%，
+  * 白白浪费；在 288 高的矮屏上又占 28%，属性区就没地方了。
++ * Compact / Medium / Expanded 分别取 20% / 25% / 30%，屏越大多给预览。
+  * 拿不到屏幕信息时退回 80（原来的经验值）。 */
+ inline int androidPreviewMinHeight(const QWidget *w)
+ {
+@@ -179,9 +209,11 @@
+ 	const int availH = available.height();
+ 	if (availH <= 0)
+ 		return 80;
+-	if (!OBSAndroidLayout::compact(available.width(), availH))
+-		return 150;
+-	return qBound(60, availH / 5, 120);
++	const auto cls = androidSizeClass(w);
++	/* 三档共用一条连续公式：可用高 × 档位比例，夹在 [60, 180]。
++	 * 不再写死 80 / 150，矮分屏和 800 高的平板都按可用高自适应。 */
++	const int percent = OBSAndroidLayout::previewHeightPercent(cls);
++	return qBound(60, availH * percent / 100, 180);
+ }
+ 
+ #endif
+--- a/obs-studio/frontend/utility/AndroidRuntimeBootstrap.cpp
++++ b/obs-studio/frontend/utility/AndroidRuntimeBootstrap.cpp
+@@ -22,15 +22,20 @@
+ #include <QCryptographicHash>
+ #include <QDir>
+ #include <QDirIterator>
++#include <QElapsedTimer>
+ #include <QFile>
+ #include <QFileInfo>
+-#include <QString>
+-#include <QStringList>
++#include <QHash>
+ #include <QLockFile>
++#include <QList>
+ #include <QRegularExpression>
+ #include <QSet>
++#include <QString>
++#include <QStringList>
+ #include <QTemporaryDir>
++#include <QTemporaryFile>
+ #include <QStandardPaths>
++#include <QtGlobal>
+ 
+ #include <android/log.h>
+ 
+@@ -76,42 +81,151 @@
+ 	return QStringLiteral("/data/user/0/%1/files").arg(QString::fromStdString(pkg));
+ }
+ 
+-/* 把资源树 resRoot 下的所有文件按同样的相对路径拷到磁盘 dstRoot。先整目录删掉，
+- * 保证每次启动都是干净的：增量拷贝会让人拿着一份改之前的 .effect 去查现在的问题
+- * （M1 实测踩过）。 */
+-bool extractTree(const QString &resRoot, const QString &dstRoot, int *count)
++/* 资源树同步（冷启动加速）。
++ *
++ * 原来每次启动都 removeRecursively() 再全量 QFile::copy：几百次
++ * mkdir / open / write / flush 全压在首帧之前，是启动阶段最重的一段同步 I/O。
++ * 这里改成按内容摘要的增量同步：
++ *   - .obs-res-cache 记录每个源文件「相对路径 / 大小 / SHA256」；
++ *   - 每次启动只重新算源文件摘要（qrc 在内存/APK 里，读比写便宜得多）；
++ *   - 摘要命中且目标文件仍在、大小一致 → 一次写都不做；
++ *   - 摘要变化或目标缺失 → 只覆盖那一个文件，并清掉已下线的旧文件；
++ *   - 缓存用 QTemporaryFile::open() + rename 原子替换（带 OpenMode 的重载是 protected），写一半被杀不会污染。
++ * 摘要是内容级而非版本戳级：APK 升级后任何资源改动都会被发现，不存在
++ * 「只改前端资源、大小恰好没变」的漏判。强制全量重解包时删掉
++ * <dstRoot>/.obs-res-cache 即可。 */
++static const char *resCacheName = ".obs-res-cache";
++
++static QByteArray fileDigest(QFile &f)
++{
++	QCryptographicHash hash(QCryptographicHash::Sha256);
++	hash.addData(&f);
++	return hash.result().toHex();
++}
++
++struct ResEntry {
++	qint64 size = 0;
++	QByteArray sha;
++};
++
++static QHash<QString, ResEntry> readResCache(const QString &path)
++{
++	QHash<QString, ResEntry> cache;
++	QFile f(path);
++	if (!f.open(QIODevice::ReadOnly))
++		return cache;
++	for (const QByteArray &line : f.readAll().split('\n')) {
++		if (line.isEmpty())
++			continue;
++		const QList<QByteArray> parts = line.split('\t');
++		if (parts.size() != 3)
++			continue;
++		bool ok = false;
++		const qint64 size = parts[1].toLongLong(&ok);
++		if (!ok || parts[2].size() != 64)
++			continue;
++		cache.insert(QString::fromUtf8(parts[0]), {size, parts[2]});
++	}
++	return cache;
++}
++
++static void writeResCache(const QString &path, const QHash<QString, ResEntry> &current)
++{
++	QTemporaryFile tmp(path + ".XXXXXX");
++	if (!tmp.open())
++		return;
++	QStringList keys = current.keys();
++	keys.sort();
++	for (const QString &rel : keys) {
++		const ResEntry &e = current.value(rel);
++		tmp.write(rel.toUtf8());
++		tmp.write("\t");
++		tmp.write(QByteArray::number(e.size));
++		tmp.write("\t");
++		tmp.write(e.sha);
++		tmp.write("\n");
++	}
++	if (!tmp.flush())
++		return;
++	tmp.setAutoRemove(false);
++	QFile::remove(path);
++	if (!tmp.rename(path))
++		BOOT_LOGW("资源缓存写入失败，下次启动将全量同步: %s", path.toUtf8().constData());
++}
++
++bool extractTree(const QString &resRoot, const QString &dstRoot, int *copied, int *skipped)
+ {
+-	QDir(dstRoot).removeRecursively();
+ 	if (!QDir().mkpath(dstRoot)) {
+ 		BOOT_LOGE("创建目录失败: %s", dstRoot.toUtf8().constData());
+ 		return false;
+ 	}
+ 
+-	int n = 0;
++	const QString cachePath = dstRoot + '/' + resCacheName;
++	const QHash<QString, ResEntry> oldCache = readResCache(cachePath);
++	QHash<QString, ResEntry> current;
++
++	int nCopied = 0, nSkipped = 0;
+ 	QDirIterator it(resRoot, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+ 	while (it.hasNext()) {
+ 		const QString src = it.next();
+-		const QString dst = dstRoot + src.mid(resRoot.length());
+-		QDir().mkpath(QFileInfo(dst).absolutePath());
++		const QString rel = src.mid(resRoot.length());
++		const QString dst = dstRoot + rel;
++		QFile sf(src);
++		if (!sf.open(QIODevice::ReadOnly)) {
++			BOOT_LOGE("读取资源失败: %s", src.toUtf8().constData());
++			return false;
++		}
++		const qint64 size = sf.size();
++		const QByteArray sha = fileDigest(sf);
++		sf.close();
++		current.insert(rel, {size, sha});
++
++		const auto cached = oldCache.constFind(rel);
++		const QFileInfo dstInfo(dst);
++		/* 命中条件：源摘要与缓存一致 + 目标存在且大小一致。私有目录里的
++		 * 目标被外部篡改且大小不变的概率极低，需要强校验时删缓存即可。 */
++		if (cached != oldCache.constEnd() && cached->sha == sha && cached->size == size &&
++		    dstInfo.isFile() && dstInfo.size() == size) {
++			++nSkipped;
++			continue;
++		}
++		if (!QDir().mkpath(QFileInfo(dst).absolutePath())) {
++			BOOT_LOGE("创建资源子目录失败: %s", dst.toUtf8().constData());
++			return false;
++		}
+ 		QFile::remove(dst);
+ 		if (!QFile::copy(src, dst)) {
+ 			BOOT_LOGE("复制资源文件失败: %s -> %s", src.toUtf8().constData(), dst.toUtf8().constData());
+ 			return false;
+ 		}
+-		++n;
++		++nCopied;
+ 	}
+-	*count = n;
++
++	/* 只清掉上一版缓存记录过、这一版已不存在的目标；不整树删除。 */
++	for (auto i = oldCache.constBegin(); i != oldCache.constEnd(); ++i) {
++		if (!current.contains(i.key()))
++			QFile::remove(dstRoot + i.key());
++	}
++
++	writeResCache(cachePath, current);
++	if (copied)
++		*copied = nCopied;
++	if (skipped)
++		*skipped = nSkipped;
+ 	return true;
+ }
+ 
+ void unpack(const char *label, const QString &resRoot, const QString &dstRoot)
+ {
+-	int files = 0;
+-	const bool ok = extractTree(resRoot, dstRoot, &files);
++	QElapsedTimer timer;
++	timer.start();
++	int copied = 0, skipped = 0;
++	const bool ok = extractTree(resRoot, dstRoot, &copied, &skipped);
+ 	if (ok)
+-		BOOT_LOGI("%s：解包成功（%d 个文件 -> %s）", label, files, dstRoot.toUtf8().constData());
++		BOOT_LOGI("%s：同步完成（重写 %d / 缓存命中 %d，耗时 %lld ms -> %s）", label, copied, skipped,
++			  static_cast<long long>(timer.elapsed()), dstRoot.toUtf8().constData());
+ 	else
+-		BOOT_LOGE("%s：解包失败（已处理 %d 个文件 -> %s）", label, files, dstRoot.toUtf8().constData());
++		BOOT_LOGE("%s：同步失败（已重写 %d 个文件 -> %s）", label, copied, dstRoot.toUtf8().constData());
+ }
+ 
+ } // namespace
+@@ -164,12 +278,19 @@
+ 	 * <root>/share/obs/obs-plugins/%module% 里的 %module% 换成模块名当 data_path，
+ 	 * obs_find_module_file() 再往里 stat 具体文件 —— 目录在不在、里有几张 effect，
+ 	 * 就是这条链能不能走通的证据。 */
++	/* 启动期纯诊断：默认只打一行目录数。逐目录 entryList + 拼串 + logcat
++	 * 全部压在首帧之前，插件一多就是几十次系统调用。排查资源布局时设
++	 * OBS_ANDROID_BOOT_DEBUG=1 再打开详细输出。 */
+ 	QDir plugRoot(root + "/share/obs/obs-plugins");
+-	for (const QString &mod : plugRoot.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+-		const QDir m(plugRoot.filePath(mod));
+-		const QStringList files = m.entryList(QDir::Files, QDir::Name);
+-		BOOT_LOGI("插件数据目录 %s（%d 个顶层文件：%s）", m.absolutePath().toUtf8().constData(),
+-			  int(files.size()), files.join(' ').toUtf8().constData());
++	const QStringList mods = plugRoot.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
++	BOOT_LOGI("插件数据目录 %d 个（%s）", int(mods.size()), plugRoot.absolutePath().toUtf8().constData());
++	if (qgetenv("OBS_ANDROID_BOOT_DEBUG") == "1") {
++		for (const QString &mod : mods) {
++			const QDir m(plugRoot.filePath(mod));
++			const QStringList files = m.entryList(QDir::Files, QDir::Name);
++			BOOT_LOGI("插件数据目录 %s（%d 个顶层文件：%s）", m.absolutePath().toUtf8().constData(),
++				  int(files.size()), files.join(' ').toUtf8().constData());
++		}
+ 	}
+ }
+ 
+--- a/obs-studio/frontend/widgets/OBSBasic_Docks.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic_Docks.cpp
+@@ -37,23 +37,31 @@
+ #include <QToolBar>
+ #include <QToolButton>
+ #include <QWindow>
++#include <QtGlobal>
+ 
+ void OBSBasic::ConnectAndroidScreenSignals(QScreen *scr)
+ {
+ 	if (!scr || scr == androidObservedScreen)
+ 		return;
+-	QObject::disconnect(androidScreenGeoConn);
+-	QObject::disconnect(androidScreenOrientConn);
++	/* 下面几个信号都连到同一个 this，换屏时统一断开，避免 screenChanged
++	 * 反复触发导致连接累积（debounce timer 能收敛重排，但连接会一直涨）。 */
++	if (androidObservedScreen)
++		QObject::disconnect(androidObservedScreen, nullptr, this, nullptr);
+ 	androidObservedScreen = scr;
+-	androidScreenGeoConn = connect(scr, &QScreen::availableGeometryChanged, this, [this] {
++	const auto relayout = [this] {
+ 		if (androidLayoutResizeTimer)
+ 			androidLayoutResizeTimer->start();
+-	});
++	};
++	androidScreenGeoConn = connect(scr, &QScreen::availableGeometryChanged, this, relayout);
+ 	androidScreenOrientConn = connect(scr, &QScreen::orientationChanged, this, [this] {
+ 		UpdateAndroidSafeAreaMargins();
+ 		if (androidLayoutResizeTimer)
+ 			androidLayoutResizeTimer->start();
+ 	});
++	/* DPI / 物理几何变化可能不改变 availableGeometry 的像素数，却会改变 dp
++	 * 档位：接外接显示器、改显示大小、折叠屏切换都必须重新分档。 */
++	connect(scr, &QScreen::logicalDotsPerInchChanged, this, relayout);
++	connect(scr, &QScreen::geometryChanged, this, relayout);
+ }
+ 
+ void OBSBasic::ConnectAndroidWindowSignals()
+@@ -400,6 +408,14 @@
+ 	const QSize available = display ? display->availableGeometry().size() : size();
+ 	if (available.isEmpty() || androidMainDocks.isEmpty())
+ 		return;
++
++	/* 按可用区 + 当前 DPI 分档，迟滞取上一次的档位。这样旋转、分屏、
++	 * 自由窗口、外接屏都不再只看 952x552 一条硬阈值。 */
++	const int prevCls = qBound(0, property("androidSizeClassApplied").toInt(), 2);
++	const auto cls = androidSizeClass(display, available,
++					 static_cast<OBSAndroidLayout::SizeClass>(prevCls));
++	const bool classChanged = !property("androidSizeClassApplied").isValid() ||
++				  prevCls != int(cls);
+ 	if (size() != available)
+ 		resize(available);
+ 	UpdateAndroidSafeAreaMargins();
+@@ -415,18 +431,20 @@
+ 	UpdateAndroidControlColumns(phone);
+ 
+ 	// Preserve user-set divider positions and dock arrangements between real window resizes.
+-	if (contentSize == androidDockViewport && contentsMargins() == androidDockMargins)
++	// 档位变化（含只变 DPI 不改视口）必须重新套样式与列宽，不能跳过。
++	if (!classChanged && contentSize == androidDockViewport && contentsMargins() == androidDockMargins)
+ 		return;
+ 	androidDockViewport = contentSize;
+ 	androidDockMargins = contentsMargins();
+ 
+ 	const QVariant previousMode = property("androidCompactLayout");
+-	const bool compact = OBSAndroidLayout::compact(available.width(), available.height(), previousMode.toBool());
+-	if (!previousMode.isValid() || compact != previousMode.toBool()) {
++	const bool compact = cls == OBSAndroidLayout::SizeClass::Compact;
++	if (classChanged || !previousMode.isValid() || compact != previousMode.toBool()) {
+ 		setProperty("androidCompactLayout", compact);
++		setProperty("androidSizeClassApplied", int(cls));
+ 		ui->scenes->setProperty("androidCompactLayout", compact);
+ 		ui->sources->setProperty("androidCompactLayout", compact);
+-		const int rowHeight = OBSAndroidLayout::touchRowHeight(compact);
++		const int rowHeight = OBSAndroidLayout::touchRowHeight(cls);
+ 		if (!ui->scenes->GetGridMode())
+ 			ui->scenes->setStyleSheet(QStringLiteral("QListView::item { min-height: %1px; padding-top: 0px; padding-bottom: 0px; }")
+ 						 .arg(rowHeight));
+@@ -451,8 +469,8 @@
+ 				.arg(buttonSize.height() + 2).arg(buttonSize.width()).arg(buttonSize.height()));
+ 		}
+ 		UpdateContextBar(true);
+-		obsAndroidDisplayLog("Android responsive mode: compact=%d viewport=%dx%d row=%d", int(compact),
+-				     contentSize.width(), contentSize.height(), rowHeight);
++		obsAndroidDisplayLog("Android responsive mode: class=%d compact=%d viewport=%dx%d row=%d",
++				     int(cls), int(compact), contentSize.width(), contentSize.height(), rowHeight);
+ 	}
+ 	/* Keep all five panels visible. Reserve room for the complete touch
+ 	 * toolbars, then share the remaining width between the bottom panels. */
+@@ -466,13 +484,13 @@
+ 			       (!ui->sourcesDock->isHidden() && dockWidgetArea(ui->sourcesDock) == area);
+ 		};
+ 		const int left = qMax(toolbarOnSide(Qt::LeftDockWidgetArea) ? minToolbarColumn : 0,
+-				      availableWidth * 25 / 100);
++				      availableWidth * OBSAndroidLayout::leftDockPercent(cls) / 100);
+ 		const int right = qMax(toolbarOnSide(Qt::RightDockWidgetArea) ? minToolbarColumn : 0,
+-				       availableWidth * 30 / 100);
++				       availableWidth * OBSAndroidLayout::rightDockPercent(cls) / 100);
+ 		const int statusHeight = ui->statusbar->isHidden() ? 0 : ui->statusbar->sizeHint().height();
+ 		const int availableHeight = qMax(1, contentSize.height() - statusHeight);
+ 		const int half = availableHeight / 2;
+-		const int controls = availableHeight * 43 / 100;
++		const int controls = availableHeight * OBSAndroidLayout::controlsHeightPercent(cls) / 100;
+ 		ResizeAndroidPhoneDockColumns(left, right, half, availableHeight - half,
+ 					      availableHeight - controls, controls);
+ 		obsAndroidDisplayLog("Android phone landscape layout: viewport=%dx%d content=%dx%d left=%d right=%d status=%d",
+--- a/obs-studio/frontend/dialogs/OBSAbout.cpp
++++ b/obs-studio/frontend/dialogs/OBSAbout.cpp
+@@ -161,9 +161,13 @@
+ 	connect(ui->license, &ClickableLabel::clicked, this, &OBSAbout::ShowLicense);
+ 
+ 	const QRect avail = androidAvailableWindowRect(this);
+-	const bool compact = OBSAndroidLayout::compact(avail.width(), avail.height());
++	const auto cls = androidSizeClass(this);
++	const bool compact = cls == OBSAndroidLayout::SizeClass::Compact;
+ 
+-	const int iconSize = compact ? 72 : 112;
++	/* 图标尺寸随档位连续变化，不再 72 / 112 二值跳。 */
++	const int iconSize = cls == OBSAndroidLayout::SizeClass::Compact
++				     ? 72
++				     : (cls == OBSAndroidLayout::SizeClass::Medium ? 92 : 112);
+ 	ui->icon->setMinimumSize(iconSize, iconSize);
+ 	ui->icon->setMaximumSize(iconSize, iconSize);
+ 	ui->horizontalLayout_2->setAlignment(ui->icon, Qt::AlignTop | Qt::AlignHCenter);
+--- a/obs-studio/frontend/cmake/android/AndroidManifest.xml
++++ b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+@@ -139,10 +139,13 @@
+             android:excludeFromRecents="true"
+             android:screenOrientation="sensorLandscape" />
+ 
++        <!-- 自适应续：补 colorMode，深色 / 宽色域切换不再重建 Activity。
++             其余 configChanges 已覆盖旋转、分屏、DPI、字体缩放；Activity 一旦重建就要
++             重新初始化 libobs / EGL / 采集会话，是转屏卡顿的主要来源。 -->
+         <activity
+             android:name="org.qtproject.qt.android.bindings.QtActivity"
+             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+-            android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
++            android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density|colorMode"
+             android:label="@string/app_name"
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher"
